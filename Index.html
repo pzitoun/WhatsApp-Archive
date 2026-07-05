@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WhatsApp WASM Local Archive</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.2/sql-wasm.js"></script>
+    <style>
+        body { display:flex; height:100vh; margin:0; font-family:-apple-system, sans-serif; overflow:hidden; background:#efeae2; }
+        #sidebar { width:380px; background:#fff; border-right:1px solid #ccc; display:flex; flex-direction:column; z-index:10; flex-shrink:0; }
+        #tools-left { position:sticky; top:0; background:#f0f2f5; padding:12px; border-bottom:1px solid #ddd; z-index:20; }
+        .search-box { display:flex; gap:5px; margin-bottom:10px; }
+        #search { flex:1; padding:8px 12px; border-radius:6px; border:1px solid #ccc; font-size:14px; outline:none; }
+        .btn-clear { padding:8px 12px; border:1px solid #ccc; background:#fff; border-radius:6px; cursor:pointer; font-weight:bold; color:#666; }
+        #sorter { width:100%; padding:8px; border-radius:6px; border:1px solid #ccc; font-size:14px; background:#fff; outline:none; }
+        #list { flex:1; overflow-y:auto; }
+        .item { padding:12px 15px; border-bottom:1px solid #eee; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+        .item:hover { background:#f5f6f6; }
+        .item.active { background:#e9edef; }
+        .chat-info { flex:1; min-width:0; padding-right:10px; }
+        .chat-title { font-weight:bold; font-size:15px; color:#111; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .chat-last-date { font-size:12px; color:#8696a0; margin-top:3px; }
+        .msg-count { font-size:12px; color:#667781; white-space:nowrap; background:#f0f2f5; padding:4px 8px; border-radius:10px; font-weight:500; }
+        #main { flex:1; display:flex; flex-direction:column; min-width:0; overflow:hidden; }
+        #header-main { position:sticky; top:0; background:#f0f2f5; padding:10px 20px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #ccc; height:45px; z-index:20; }
+        #chat-title-display { font-weight:bold; font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .nav-arrows { display:flex; gap:10px; }
+        .nav-btn { display:flex; align-items:center; justify-content:center; width:36px; height:36px; background:#fff; border:1px solid #ccc; border-radius:6px; cursor:pointer; color:#54656f; }
+        .nav-btn:hover { background:#e9edef; }
+        #chat { flex:1; overflow-y:auto; overflow-x: hidden; padding:20px; scroll-behavior:smooth; display:flex; flex-direction:column; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); }
+        .row { display:flex; margin-bottom:8px; width:100%; flex-shrink:0; }
+        .right { justify-content:flex-end; }
+        .bubble { max-width:75%; padding:8px 12px; background:#fff; border-radius:8px; box-shadow:0 1px 0.5px rgba(0,0,0,0.13); overflow-wrap:break-word; word-break:break-word; line-height:1.4; font-size:15px; }
+        .right .bubble { background:#d9fdd3; }
+        .bubble-header { display:flex; justify-content:space-between; align-items:baseline; gap:15px; margin-bottom:4px; }
+        .bubble-header.right { justify-content:flex-end; }
+        .sender-name { font-size:13px; font-weight:600; color:#1fa855; }
+        .timestamp { font-size:11px; color:#667781; white-space:nowrap; }
+        .message-text { color:#111b21; }
+        
+        /* ÉCRANS DE STATUT */
+        #setup-screen { position:fixed; top:0; left:0; width:100vw; height:100vh; background:#fff; z-index:9999; display:none; flex-direction:column; align-items:center; justify-content:center; font-size:16px; color:#111b21; padding:20px; text-align:center; }
+        .btn-import { background:#00a884; color:#fff; border:none; padding:12px 24px; border-radius:24px; font-size:16px; font-weight:bold; cursor:pointer; margin-top:20px; }
+        #loading-screen { position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(255,255,255,0.95); z-index:9998; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:18px; font-weight:bold; color:#111b21; }
+    </style>
+</head>
+<body>
+
+    <div id="setup-screen">
+        <h2>Première Configuration</h2>
+        <p>Veuillez sélectionner votre base de données <b>whatsapp_history.db</b> (50 Mo).<br>Elle sera stockée de manière sécurisée et locale dans la mémoire de votre iPhone.</p>
+        <input type="file" id="file-picker" accept=".db" style="display:none;" onchange="handleFileSelect(this)">
+        <button class="btn-import" onclick="document.getElementById('file-picker').click()">Sélectionner le fichier .db</button>
+    </div>
+
+    <div id="loading-screen">
+        <div id="loading-status">Vérification de la mémoire locale...</div>
+    </div>
+
+    <div id="sidebar">
+        <div id="tools-left">
+            <div class="search-box">
+                <input type="text" id="search" placeholder="Discussions ou messages..." onkeyup="filterAndSortChats()">
+                <button class="btn-clear" onclick="clearSearch()">X</button>
+            </div>
+            <select id="sorter" onchange="filterAndSortChats()">
+                <option value="date_desc">Activité : Récent → Ancien</option>
+                <option value="date_asc">Activité : Ancien → Récent</option>
+                <option value="asc">Ordre : Alphabet (A - Z)</option>
+                <option value="desc">Ordre : Alphabet (Z - A)</option>
+            </select>
+        </div>
+        <div id="list"></div>
+    </div>
+    
+    <div id="main">
+        <div id="header-main">
+            <div id="chat-title-display">Sélectionnez une discussion à gauche</div>
+            <div class="nav-arrows">
+                <button class="nav-btn" onclick="scrollChat(0)" title="Aller au plus ancien">↑</button>
+                <button class="nav-btn" onclick="scrollChat(1)" title="Aller au plus récent">↓</button>
+            </div>
+        </div>
+        <div id="chat"></div>
+    </div>
+
+    <script>
+        // Si vous déportez les images sur un cloud public, modifiez cette URL racine :
+        const MEDIA_BASE_URL = "whatsapp_media/"; 
+
+        let db = null;
+        let activeChatId = null;
+        let allChatsCached = [];
+        let SQLInstance = null;
+
+        // Gestion de la base de données persistante du navigateur (IndexedDB)
+        const IDB_NAME = "WhatsAppArchiveRegistry";
+        const IDB_STORE = "Databases";
+        const IDB_KEY = "history_db";
+
+        function openIndexedDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(IDB_NAME, 1);
+                request.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+                request.onsuccess = e => resolve(e.target.result);
+                request.onerror = e => reject(e.target.error);
+            });
+        }
+
+        function getStoredDB(idb) {
+            return new Promise((resolve) => {
+                const tx = idb.transaction(IDB_STORE, "readonly");
+                const req = tx.objectStore(IDB_STORE).get(IDB_KEY);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(null);
+            });
+        }
+
+        function storeDBInIndexedDB(idb, arrayBuffer) {
+            return new Promise((resolve, reject) => {
+                const tx = idb.transaction(IDB_STORE, "readwrite");
+                const req = tx.objectStore(IDB_STORE).put(arrayBuffer, IDB_KEY);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        // Cycle de démarrage de l'application
+        initSqlJs({ locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.2/${file}` }).then(async (SQL) => {
+            SQLInstance = SQL;
+            try {
+                const idb = await openIndexedDB();
+                const cachedBuffer = await getStoredDB(idb);
+
+                if (cachedBuffer) {
+                    document.getElementById('loading-status').innerText = "Démarrage du moteur de Traitement Cognitif Synthétique...";
+                    bootEngine(cachedBuffer);
+                } else {
+                    // La base n'existe pas encore, on bascule sur l'écran d'importation
+                    document.getElementById('loading-screen').style.display = 'none';
+                    document.getElementById('setup-screen').style.display = 'flex';
+                }
+            } catch (err) {
+                document.getElementById('loading-status').innerText = "Erreur d'initialisation : " + err.message;
+            }
+        });
+
+        async function handleFileSelect(input) {
+            const file = input.files[0];
+            if (!file) return;
+            
+            document.getElementById('setup-screen').style.display = 'none';
+            document.getElementById('loading-screen').style.display = 'flex';
+            document.getElementById('loading-status').innerText = "Sauvegarde locale du fichier dans l'iPhone (50 Mo)...";
+
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                const buffer = e.target.result;
+                const idb = await openIndexedDB();
+                await storeDBInIndexedDB(idb, buffer);
+                bootEngine(buffer);
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function bootEngine(arrayBuffer) {
+            db = new SQLInstance.Database(new Uint8Array(arrayBuffer));
+            document.getElementById('loading-screen').style.display = 'none';
+            buildGlobalChatCache();
+            filterAndSortChats();
+        }
+
+        function execSQL(sql, params = []) {
+            const stmt = db.prepare(sql);
+            stmt.bind(params);
+            const result = [];
+            while(stmt.step()) result.push(stmt.getAsObject());
+            stmt.free();
+            return result;
+        }
+
+        function nettoyerNom(nom) {
+            if (!nom) return "";
+            return nom.replace(/[\u200e\u200f\u202a\u202c]/g, '').trim();
+        }
+
+        function formaterDate(isoStr, rawStr) {
+            if (isoStr && !isoStr.startsWith('1970')) {
+                try {
+                    const p = isoStr.replace('T', ' ').split(' ');
+                    const ymd = p[0].split('-');
+                    return `${ymd[2]}/${ymd[1]}/${ymd[0]} ${p[1].substring(0, 5)}`;
+                } catch(e) {}
+            }
+            return rawStr ? String(rawStr).replace(/[\[\],]/g, '') : "";
+        }
+
+        function escapeHtml(str) {
+            if (!str) return "";
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        function buildGlobalChatCache() {
+            allChatsCached = execSQL(`
+                SELECT c.id, c.chat_name as name, COUNT(m.id) as count,
+                       MAX(CASE WHEN m.msg_datetime_iso LIKE '1970%' THEN m.msg_datetime_raw ELSE m.msg_datetime_iso END) as last_date,
+                       MAX(m.id) as sort_id
+                FROM chats c
+                LEFT JOIN messages m ON c.id = m.chat_id
+                GROUP BY c.id
+            `);
+            allChatsCached.forEach(c => {
+                c.last_date_formatee = c.last_date ? formaterDate(c.last_date, c.last_date) : "--/--/---- --:--";
+            });
+        }
+
+        function clearSearch() {
+            document.getElementById('search').value = '';
+            filterAndSortChats();
+        }
+
+        function filterAndSortChats() {
+            const term = document.getElementById('search').value.trim().toLowerCase();
+            const order = document.getElementById('sorter').value;
+            
+            let filtered = [...allChatsCached];
+
+            if (term) {
+                const matchingChatIds = new Set();
+                const textMatches = execSQL("SELECT DISTINCT chat_id FROM messages WHERE message_text LIKE ?", [`%${term}%`]);
+                textMatches.forEach(m => matchingChatIds.add(m.chat_id));
+                filtered = filtered.filter(c => c.name.toLowerCase().includes(term) || matchingChatIds.has(c.id));
+            }
+
+            const obtenirNomTriable = str => {
+                if (!str) return "";
+                const norm = str.normalize("NFD").toLowerCase();
+                for (let i = 0; i < norm.length; i++) {
+                    const code = norm.charCodeAt(i);
+                    if ((code >= 97 && code <= 122) || (code >= 48 && code <= 57)) return norm.substring(i);
+                }
+                return norm;
+            };
+
+            filtered.sort((a, b) => {
+                if (order === 'asc') return obtenirNomTriable(a.name).localeCompare(obtenirNomTriable(b.name));
+                if (order === 'desc') return obtenirNomTriable(b.name).localeCompare(obtenirNomTriable(a.name));
+                if (order === 'date_desc') return b.sort_id - a.sort_id;
+                if (order === 'date_asc') return a.sort_id - b.sort_id;
+            });
+
+            document.getElementById('list').innerHTML = filtered.map(d => {
+                const activeClass = d.id === activeChatId ? 'active' : '';
+                return `<div class="item ${activeClass}" onclick="loadChatMessages(${d.id}, '${d.name.replace(/'/g, "\\'")}')">
+                    <div class="chat-info">
+                        <div class="chat-title">${escapeHtml(d.name)}</div>
+                        <div class="chat-last-date">🕒 ${escapeHtml(d.last_date_formatee)}</div>
+                    </div>
+                    <span class="msg-count">${d.count} msgs</span>
+                 </div>`;
+            }).join('');
+        }
+
+        function loadChatMessages(id, name) {
+            activeChatId = id;
+            filterAndSortChats();
+            document.getElementById('chat-title-display').innerText = name;
+            document.getElementById('chat').innerHTML = '<div style="text-align:center; padding:40px; color:#666;">Lecture de la RAM locale...</div>';
+            
+            const rows = execSQL(`
+                SELECT m.sender, m.message_text, a.stored_name, a.original_name, a.mime_type, m.msg_datetime_iso, m.msg_datetime_raw 
+                FROM messages m LEFT JOIN attachments a ON m.id = a.message_id 
+                WHERE m.chat_id = ? ORDER BY m.id ASC
+            `, [id]);
+
+            const bubblesHtml = rows.map(r => {
+                let txt = r.message_text || "";
+                let media = r.stored_name ? r.stored_name : r.original_name;
+
+                let txtClean = txt.replace(/<\s*(?:pièce jointe|fichier joint|vidéo|image|média|document|audio)[^>]*>/gi, '').trim();
+                let txtHtml = escapeHtml(txtClean).replace(/\n/g, '<br>');
+
+                if (media) {
+                    const ext = media.split('.').pop().toLowerCase();
+                    const mediaPath = MEDIA_BASE_URL + encodeURIComponent(media);
+                    let mediaHtml = "";
+
+                    if ((r.mime_type && r.mime_type.toLowerCase().includes('image')) || ['jpg','jpeg','png','gif','heic','webp'].includes(ext)) {
+                        mediaHtml = `<a href="${mediaPath}" target="_blank"><img src="${mediaPath}" style="max-width:250px; border-radius:5px; display:block; margin-bottom:5px;" loading="lazy"></a>`;
+                    } else if ((r.mime_type && r.mime_type.toLowerCase().includes('video')) || ['mp4','mov','3gp','avi'].includes(ext)) {
+                        mediaHtml = `<video controls preload="metadata" style="max-width:250px; border-radius:5px; display:block; margin-bottom:5px;"><source src="${mediaPath}">Vidéo</video>`;
+                    } else if (ext === 'opus') {
+                        mediaHtml = `<a href="${mediaPath}" target="_blank" style="display:inline-block; padding:8px; background:#e1e8ed; border-radius:5px; text-decoration:none; color:#111; font-size:12px; margin-bottom:5px; font-weight:bold;">🎵 vocal : ${media}</a><br>`;
+                    } else if ((r.mime_type && r.mime_type.toLowerCase().includes('audio')) || ['mp3','m4a','ogg','wav'].includes(ext)) {
+                        mediaHtml = `<audio controls style="max-width:250px; display:block; margin-bottom:5px;"><source src="${mediaPath}"></audio>`;
+                    } else {
+                        mediaHtml = `<a href="${mediaPath}" target="_blank" style="display:inline-block; padding:8px; background:#e1e8ed; border-radius:5px; text-decoration:none; color:#111; font-size:12px; margin-bottom:5px;">📄 ${media}</a><br>`;
+                    }
+                    txtHtml = mediaHtml + txtHtml;
+                }
+
+                if (!txtHtml.trim()) txtHtml = "<span style='color:#999; font-style:italic;'>[Média]</span>";
+
+                const expediteur = nettoyerNom(r.sender);
+                const isIsa = expediteur.toLowerCase().includes('isabelle');
+                const cls = isIsa ? "right" : "left";
+                const dateFormatee = formaterDate(r.msg_datetime_iso, r.msg_datetime_raw);
+
+                const hdr = isIsa 
+                    ? `<div class="bubble-header right"><span class="timestamp">${dateFormatee}</span></div>`
+                    : `<div class="bubble-header"><span class="sender-name">${escapeHtml(expediteur)}</span><span class="timestamp">${dateFormatee}</span></div>`;
+
+                return `<div class="row ${cls}"><div class="bubble ${cls}">${hdr}<div class="message-text">${txtHtml}</div></div></div>`;
+            });
+
+            document.getElementById('chat').innerHTML = bubblesHtml.join('') || '<div style="text-align:center; padding:20px;">Discussion vide.</div>';
+            setTimeout(() => scrollChat(1), 50);
+        }
+
+        function scrollChat(direction) {
+            const c = document.getElementById('chat');
+            c.scrollTop = direction === 0 ? 0 : c.scrollHeight;
+        }
+    </script>
+</body>
+</html>
